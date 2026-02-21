@@ -43,6 +43,14 @@
       height: 100%;
       object-fit: contain;
     }
+    .range-display {
+      width: 100%;
+      max-width: 280px;
+      margin: 0 auto 0.5rem;
+      text-align: center;
+      font-size: 0.9rem;
+      color: #555;
+    }
     .guess-row {
       display: flex;
       gap: 0.5rem;
@@ -76,6 +84,10 @@
     }
     .message.error { color: #b91c1c; }
     .message.success { color: #15803d; }
+    .confirm-link { margin-bottom: 1rem; text-align: center; }
+    .confirm-link a, .game-over .confirm-p a { color: #2563eb; }
+    .confirm-link a:hover, .game-over .confirm-p a:hover { text-decoration: underline; }
+    .game-over .confirm-p { margin: 0.5rem 0; }
     .game-over {
       text-align: center;
       padding: 1rem;
@@ -100,14 +112,19 @@
     <span class="loading" id="loadingText">Loading…</span>
     <img id="cardImage" alt="" class="hidden" />
   </div>
+  <div class="range-display hidden" id="rangeDisplay"></div>
   <div class="guess-row hidden" id="guessRow">
     <input type="number" id="priceInput" placeholder="Guess price ($)" min="0" step="0.01" />
     <button type="button" id="submitBtn">Submit</button>
   </div>
   <div class="message" id="message"></div>
+  <div class="confirm-link hidden" id="confirmLinkWrap">
+    <a id="confirmLinkWin" href="#" target="_blank" rel="noopener">Confirm on TCGPlayer</a>
+  </div>
   <div class="game-over hidden" id="gameOver">
     <h2>Game Over</h2>
     <p id="finalScore">Your score: 0</p>
+    <p class="confirm-p hidden" id="confirmLinkLoseWrap"><a id="confirmLinkLose" href="#" target="_blank" rel="noopener">Confirm price on TCGPlayer</a></p>
     <button type="button" id="playAgainBtn">Play Again</button>
   </div>
 
@@ -130,6 +147,11 @@
       gameOver: document.getElementById('gameOver'),
       finalScore: document.getElementById('finalScore'),
       playAgainBtn: document.getElementById('playAgainBtn'),
+      rangeDisplay: document.getElementById('rangeDisplay'),
+      confirmLinkWrap: document.getElementById('confirmLinkWrap'),
+      confirmLinkWin: document.getElementById('confirmLinkWin'),
+      confirmLinkLose: document.getElementById('confirmLinkLose'),
+      confirmLinkLoseWrap: document.getElementById('confirmLinkLoseWrap'),
     };
 
     let state = {
@@ -146,10 +168,34 @@
       el.message.className = 'message' + (type ? ' ' + type : '');
     }
 
+    function getMarginPercent(score) {
+      return Math.max(5, 40 - Math.floor(score / 5) * 5);
+    }
+
+    function getRange(marketPrice, score) {
+      const pct = getMarginPercent(score) / 100;
+      return {
+        low: marketPrice * (1 - pct),
+        high: marketPrice * (1 + pct),
+        pct: getMarginPercent(score),
+      };
+    }
+
+    function updateRangeDisplay() {
+      if (state.currentMarketPrice == null) {
+        el.rangeDisplay.classList.add('hidden');
+        return;
+      }
+      const r = getRange(state.currentMarketPrice, state.score);
+      el.rangeDisplay.textContent = 'Get within ±' + r.pct + '%';
+      el.rangeDisplay.classList.remove('hidden');
+    }
+
     function showLoading(show) {
       el.loadingText.classList.toggle('hidden', !show);
       el.cardImage.classList.toggle('hidden', show);
       el.guessRow.classList.toggle('hidden', show);
+      el.rangeDisplay.classList.toggle('hidden', show);
     }
 
     function showGameOver(show) {
@@ -196,13 +242,18 @@
       }
 
       const pool = productsData.results
-        .filter(prod => prod.productId && prod.imageUrl && priceByProduct.has(prod.productId))
+        .filter(prod => {
+          if (!prod.productId || !prod.imageUrl || !priceByProduct.has(prod.productId)) return false;
+          const priceInfo = priceByProduct.get(prod.productId);
+          return priceInfo.marketPrice >= 1;
+        })
         .map(prod => {
           const priceInfo = priceByProduct.get(prod.productId);
           return {
             productId: prod.productId,
             name: prod.name,
             imageUrl: prod.imageUrl,
+            url: prod.url || '',
             marketPrice: priceInfo.marketPrice,
             subTypeName: priceInfo.subTypeName,
           };
@@ -234,6 +285,8 @@
       el.priceInput.focus();
       setMessage('');
       el.cardInfo.classList.add('hidden');
+      el.rangeDisplay.classList.add('hidden');
+      el.confirmLinkWrap.classList.add('hidden');
       showLoading(true);
 
       (async () => {
@@ -252,6 +305,7 @@
           el.setName.textContent = state.currentSetName ? 'Set: ' + state.currentSetName : '';
           el.subTypeName.textContent = card.subTypeName ? card.subTypeName : '';
           el.cardInfo.classList.remove('hidden');
+          updateRangeDisplay();
           showLoading(false);
           setMessage('');
         } catch (err) {
@@ -265,10 +319,16 @@
     function nextRound() {
       state.score++;
       el.score.textContent = 'Score: ' + state.score;
+      state.pool = [];
       const priceStr = state.currentMarketPrice != null ? ' $' + state.currentMarketPrice.toFixed(2) : '';
       setMessage('Correct! Market price was' + priceStr + '.', 'success');
+      if (state.currentProduct && state.currentProduct.url) {
+        el.confirmLinkWin.href = state.currentProduct.url;
+        el.confirmLinkWrap.classList.remove('hidden');
+      }
       setTimeout(() => {
         setMessage('');
+        el.confirmLinkWrap.classList.add('hidden');
         startRound();
       }, 1500);
     }
@@ -277,6 +337,12 @@
       state.gameActive = false;
       el.guessRow.classList.add('hidden');
       el.finalScore.textContent = 'Your score: ' + state.score;
+      if (state.currentProduct && state.currentProduct.url) {
+        el.confirmLinkLose.href = state.currentProduct.url;
+        el.confirmLinkLoseWrap.classList.remove('hidden');
+      } else {
+        el.confirmLinkLoseWrap.classList.add('hidden');
+      }
       showGameOver(true);
     }
 
@@ -291,9 +357,8 @@
         setMessage('Enter a valid price (number ≥ 0).', 'error');
         return;
       }
-      const low = state.currentMarketPrice * 0.9;
-      const high = state.currentMarketPrice * 1.1;
-      if (guess >= low && guess <= high) {
+      const r = getRange(state.currentMarketPrice, state.score);
+      if (guess >= r.low && guess <= r.high) {
         nextRound();
       } else {
         setMessage(
