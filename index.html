@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pokemon Card Price Guess</title>
+  <title>Card Price Guess</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -99,10 +99,23 @@
     .game-over h2 { margin: 0 0 0.5rem; color: #b91c1c; }
     .hidden { display: none !important; }
     .loading { color: #666; }
+    .choice-screen { text-align: center; }
+    .choice-screen h2 { margin: 0 0 1.5rem; font-size: 1.25rem; }
+    .choice-buttons { display: flex; flex-direction: column; gap: 0.75rem; max-width: 200px; margin: 0 auto; }
+    .choice-buttons button { padding: 0.75rem 1.5rem; font-size: 1.1rem; cursor: pointer; border-radius: 8px; border: 2px solid #2563eb; background: #fff; color: #2563eb; }
+    .choice-buttons button:hover { background: #2563eb; color: #fff; }
   </style>
 </head>
 <body>
-  <h1>Pokemon Card Price Guess</h1>
+  <div class="choice-screen" id="choiceScreen">
+    <h2>Choose a game</h2>
+    <div class="choice-buttons">
+      <button type="button" id="choicePokemon">Pokémon</button>
+      <button type="button" id="choiceMagic">Magic</button>
+    </div>
+  </div>
+  <div id="gameArea" class="hidden">
+  <h1 id="gameTitle">Card Price Guess</h1>
   <div class="score" id="score">Score: 0</div>
   <div class="card-info hidden" id="cardInfo">
     <span id="setName"></span>
@@ -127,12 +140,17 @@
     <p class="confirm-p hidden" id="confirmLinkLoseWrap"><a id="confirmLinkLose" href="#" target="_blank" rel="noopener">Confirm price on TCGPlayer</a></p>
     <button type="button" id="playAgainBtn">Play Again</button>
   </div>
+  </div>
 
   <script>
-    const BASE = 'https://tcgcsv.com/tcgplayer/3';
-    const CATEGORY = 3;
+    const API_ROOT = 'https://tcgcsv.com/tcgplayer';
 
     const el = {
+      choiceScreen: document.getElementById('choiceScreen'),
+      gameArea: document.getElementById('gameArea'),
+      gameTitle: document.getElementById('gameTitle'),
+      choicePokemon: document.getElementById('choicePokemon'),
+      choiceMagic: document.getElementById('choiceMagic'),
       score: document.getElementById('score'),
       cardInfo: document.getElementById('cardInfo'),
       setName: document.getElementById('setName'),
@@ -155,6 +173,7 @@
     };
 
     let state = {
+      category: null,
       score: 0,
       pool: [],
       currentProduct: null,
@@ -162,6 +181,10 @@
       currentSetName: '',
       gameActive: true,
     };
+
+    function getBase() {
+      return API_ROOT + '/' + state.category;
+    }
 
     function setMessage(text, type = '') {
       el.message.textContent = text;
@@ -212,7 +235,7 @@
     }
 
     async function loadGroups() {
-      const data = await fetchJson(`${BASE}/groups`);
+      const data = await fetchJson(getBase() + '/groups');
       if (!data.success || !Array.isArray(data.results) || data.results.length === 0) {
         throw new Error('No groups');
       }
@@ -223,8 +246,8 @@
 
     async function loadProductsAndPrices(groupId) {
       const [productsData, pricesData] = await Promise.all([
-        fetchJson(`${BASE}/${groupId}/products`),
-        fetchJson(`${BASE}/${groupId}/prices`),
+        fetchJson(getBase() + '/' + groupId + '/products'),
+        fetchJson(getBase() + '/' + groupId + '/prices'),
       ]);
       if (!productsData.success || !Array.isArray(productsData.results)) throw new Error('No products');
       if (!pricesData.success || !Array.isArray(pricesData.results)) throw new Error('No prices');
@@ -241,9 +264,12 @@
         }
       }
 
+      const EXCLUDED_TERMS = ['pack', 'booster', 'case', 'bundle', 'box'];
       const pool = productsData.results
         .filter(prod => {
           if (!prod.productId || !prod.imageUrl || !priceByProduct.has(prod.productId)) return false;
+          const nameLower = (prod.name || '').toLowerCase();
+          if (EXCLUDED_TERMS.some(term => nameLower.includes(term))) return false;
           const priceInfo = priceByProduct.get(prod.productId);
           return priceInfo.marketPrice >= 1;
         })
@@ -316,12 +342,12 @@
       })();
     }
 
-    function nextRound() {
-      state.score++;
+    function nextRound(points, messageText) {
+      state.score += points;
       el.score.textContent = 'Score: ' + state.score;
       state.pool = [];
-      const priceStr = state.currentMarketPrice != null ? ' $' + state.currentMarketPrice.toFixed(2) : '';
-      setMessage('Correct! Market price was' + priceStr + '.', 'success');
+      const priceStr = state.currentMarketPrice != null ? ' Market price was $' + state.currentMarketPrice.toFixed(2) + '.' : '';
+      setMessage(messageText + ' +' + points + '! ' + priceStr, 'success');
       if (state.currentProduct && state.currentProduct.url) {
         el.confirmLinkWin.href = state.currentProduct.url;
         el.confirmLinkWrap.classList.remove('hidden');
@@ -358,8 +384,15 @@
         return;
       }
       const r = getRange(state.currentMarketPrice, state.score);
-      if (guess >= r.low && guess <= r.high) {
-        nextRound();
+      const diff = Math.abs(guess - state.currentMarketPrice);
+      const correctDollar = Math.floor(state.currentMarketPrice) === Math.floor(guess);
+
+      if (diff <= 0.10) {
+        nextRound(3, 'Within 10¢!');
+      } else if (correctDollar) {
+        nextRound(2, 'Correct dollar amount!');
+      } else if (guess >= r.low && guess <= r.high) {
+        nextRound(1, 'Correct!');
       } else {
         setMessage(
           'Wrong! Market price was $' + state.currentMarketPrice.toFixed(2) + '.',
@@ -380,13 +413,21 @@
       startRound();
     }
 
+    function startGame(category) {
+      state.category = category;
+      el.gameTitle.textContent = category === 3 ? 'Pokémon Card Price Guess' : 'Magic Card Price Guess';
+      el.choiceScreen.classList.add('hidden');
+      el.gameArea.classList.remove('hidden');
+      startRound();
+    }
+
+    el.choicePokemon.addEventListener('click', () => startGame(3));
+    el.choiceMagic.addEventListener('click', () => startGame(1));
     el.submitBtn.addEventListener('click', onSubmit);
     el.priceInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') onSubmit();
     });
     el.playAgainBtn.addEventListener('click', playAgain);
-
-    startRound();
   </script>
 </body>
 </html>
