@@ -1,7 +1,327 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pokemon Card Price Guess</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 480px;
+      margin: 0 auto;
+      padding: 1.5rem;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    h1 { margin: 0 0 1rem; font-size: 1.25rem; }
+    .score { margin-bottom: 0.5rem; font-weight: 600; }
+    .card-info {
+      margin-bottom: 0.5rem;
+      text-align: center;
+      font-size: 0.9rem;
+      color: #444;
+    }
+    .card-info span + span::before { content: ' · '; }
+    .card-container {
+      width: 100%;
+      aspect-ratio: 2.5/3.5;
+      max-width: 280px;
+      margin: 0 auto 1rem;
+      background: #eee;
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .guess-row {
+      display: flex;
+      gap: 0.5rem;
+      width: 100%;
+      max-width: 280px;
+      margin: 0 auto 1rem;
+    }
+    .guess-row input {
+      flex: 1;
+      padding: 0.5rem;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .guess-row button {
+      padding: 0.5rem 1rem;
+      font-size: 1rem;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .guess-row button:hover { background: #1d4ed8; }
+    .guess-row button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .message {
+      min-height: 2rem;
+      margin-bottom: 1rem;
+      text-align: center;
+      font-weight: 500;
+    }
+    .message.error { color: #b91c1c; }
+    .message.success { color: #15803d; }
+    .game-over {
+      text-align: center;
+      padding: 1rem;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+    }
+    .game-over h2 { margin: 0 0 0.5rem; color: #b91c1c; }
+    .hidden { display: none !important; }
+    .loading { color: #666; }
+  </style>
+</head>
 <body>
-<h1>Hello World</h1>
-<p>I'm hosted with GitHub Pages.</p>
+  <h1>Pokemon Card Price Guess</h1>
+  <div class="score" id="score">Score: 0</div>
+  <div class="card-info hidden" id="cardInfo">
+    <span id="setName"></span>
+    <span id="subTypeName"></span>
+  </div>
+  <div class="card-container" id="cardContainer">
+    <span class="loading" id="loadingText">Loading…</span>
+    <img id="cardImage" alt="" class="hidden" />
+  </div>
+  <div class="guess-row hidden" id="guessRow">
+    <input type="number" id="priceInput" placeholder="Guess price ($)" min="0" step="0.01" />
+    <button type="button" id="submitBtn">Submit</button>
+  </div>
+  <div class="message" id="message"></div>
+  <div class="game-over hidden" id="gameOver">
+    <h2>Game Over</h2>
+    <p id="finalScore">Your score: 0</p>
+    <button type="button" id="playAgainBtn">Play Again</button>
+  </div>
+
+  <script>
+    const BASE = 'https://tcgcsv.com/tcgplayer/3';
+    const CATEGORY = 3;
+
+    const el = {
+      score: document.getElementById('score'),
+      cardInfo: document.getElementById('cardInfo'),
+      setName: document.getElementById('setName'),
+      subTypeName: document.getElementById('subTypeName'),
+      cardContainer: document.getElementById('cardContainer'),
+      loadingText: document.getElementById('loadingText'),
+      cardImage: document.getElementById('cardImage'),
+      guessRow: document.getElementById('guessRow'),
+      priceInput: document.getElementById('priceInput'),
+      submitBtn: document.getElementById('submitBtn'),
+      message: document.getElementById('message'),
+      gameOver: document.getElementById('gameOver'),
+      finalScore: document.getElementById('finalScore'),
+      playAgainBtn: document.getElementById('playAgainBtn'),
+    };
+
+    let state = {
+      score: 0,
+      pool: [],
+      currentProduct: null,
+      currentMarketPrice: null,
+      currentSetName: '',
+      gameActive: true,
+    };
+
+    function setMessage(text, type = '') {
+      el.message.textContent = text;
+      el.message.className = 'message' + (type ? ' ' + type : '');
+    }
+
+    function showLoading(show) {
+      el.loadingText.classList.toggle('hidden', !show);
+      el.cardImage.classList.toggle('hidden', show);
+      el.guessRow.classList.toggle('hidden', show);
+    }
+
+    function showGameOver(show) {
+      el.gameOver.classList.toggle('hidden', !show);
+      if (show) {
+        el.finalScore.textContent = 'Your score: ' + state.score;
+      }
+    }
+
+    async function fetchJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Network error');
+      return res.json();
+    }
+
+    async function loadGroups() {
+      const data = await fetchJson(`${BASE}/groups`);
+      if (!data.success || !Array.isArray(data.results) || data.results.length === 0) {
+        throw new Error('No groups');
+      }
+      const groups = data.results.filter(g => g.groupId && g.name);
+      const group = groups[Math.floor(Math.random() * groups.length)];
+      return { groupId: group.groupId, name: group.name };
+    }
+
+    async function loadProductsAndPrices(groupId) {
+      const [productsData, pricesData] = await Promise.all([
+        fetchJson(`${BASE}/${groupId}/products`),
+        fetchJson(`${BASE}/${groupId}/prices`),
+      ]);
+      if (!productsData.success || !Array.isArray(productsData.results)) throw new Error('No products');
+      if (!pricesData.success || !Array.isArray(pricesData.results)) throw new Error('No prices');
+
+      const priceByProduct = new Map();
+      for (const p of pricesData.results) {
+        if (p.productId != null && p.marketPrice != null && Number.isFinite(p.marketPrice)) {
+          if (!priceByProduct.has(p.productId)) {
+            priceByProduct.set(p.productId, {
+              marketPrice: p.marketPrice,
+              subTypeName: p.subTypeName || 'Normal',
+            });
+          }
+        }
+      }
+
+      const pool = productsData.results
+        .filter(prod => prod.productId && prod.imageUrl && priceByProduct.has(prod.productId))
+        .map(prod => {
+          const priceInfo = priceByProduct.get(prod.productId);
+          return {
+            productId: prod.productId,
+            name: prod.name,
+            imageUrl: prod.imageUrl,
+            marketPrice: priceInfo.marketPrice,
+            subTypeName: priceInfo.subTypeName,
+          };
+        });
+
+      return pool;
+    }
+
+    function pickRandomCard() {
+      if (state.pool.length === 0) return null;
+      const i = Math.floor(Math.random() * state.pool.length);
+      const card = state.pool[i];
+      state.pool.splice(i, 1);
+      return card;
+    }
+
+    async function ensurePool() {
+      if (state.pool.length > 0) return;
+      const group = await loadGroups();
+      state.pool = await loadProductsAndPrices(group.groupId);
+      state.currentSetName = group.name;
+      if (state.pool.length === 0) throw new Error('No cards with prices in this set');
+    }
+
+    function startRound() {
+      showGameOver(false);
+      state.gameActive = true;
+      el.priceInput.value = '';
+      el.priceInput.focus();
+      setMessage('');
+      el.cardInfo.classList.add('hidden');
+      showLoading(true);
+
+      (async () => {
+        try {
+          await ensurePool();
+          const card = pickRandomCard();
+          if (!card) {
+            await ensurePool();
+            return startRound();
+          }
+          state.currentProduct = card;
+          state.currentMarketPrice = card.marketPrice;
+
+          el.cardImage.src = card.imageUrl;
+          el.cardImage.alt = card.name;
+          el.setName.textContent = state.currentSetName ? 'Set: ' + state.currentSetName : '';
+          el.subTypeName.textContent = card.subTypeName ? card.subTypeName : '';
+          el.cardInfo.classList.remove('hidden');
+          showLoading(false);
+          setMessage('');
+        } catch (err) {
+          setMessage('Error loading cards. Click Submit to retry.', 'error');
+          showLoading(false);
+          el.guessRow.classList.remove('hidden');
+        }
+      })();
+    }
+
+    function nextRound() {
+      state.score++;
+      el.score.textContent = 'Score: ' + state.score;
+      const priceStr = state.currentMarketPrice != null ? ' $' + state.currentMarketPrice.toFixed(2) : '';
+      setMessage('Correct! Market price was' + priceStr + '.', 'success');
+      setTimeout(() => {
+        setMessage('');
+        startRound();
+      }, 1500);
+    }
+
+    function endGame() {
+      state.gameActive = false;
+      el.guessRow.classList.add('hidden');
+      el.finalScore.textContent = 'Your score: ' + state.score;
+      showGameOver(true);
+    }
+
+    function onSubmit() {
+      if (!state.gameActive || state.currentProduct == null) {
+        startRound();
+        return;
+      }
+      const raw = el.priceInput.value.trim();
+      const guess = parseFloat(raw);
+      if (!Number.isFinite(guess) || guess < 0) {
+        setMessage('Enter a valid price (number ≥ 0).', 'error');
+        return;
+      }
+      const low = state.currentMarketPrice * 0.9;
+      const high = state.currentMarketPrice * 1.1;
+      if (guess >= low && guess <= high) {
+        nextRound();
+      } else {
+        setMessage(
+          'Wrong! Market price was $' + state.currentMarketPrice.toFixed(2) + '.',
+          'error'
+        );
+        endGame();
+      }
+    }
+
+    function playAgain() {
+      state.score = 0;
+      state.pool = [];
+      state.currentProduct = null;
+      state.currentMarketPrice = null;
+      el.score.textContent = 'Score: 0';
+      showGameOver(false);
+      el.guessRow.classList.remove('hidden');
+      startRound();
+    }
+
+    el.submitBtn.addEventListener('click', onSubmit);
+    el.priceInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') onSubmit();
+    });
+    el.playAgainBtn.addEventListener('click', playAgain);
+
+    startRound();
+  </script>
 </body>
 </html>
